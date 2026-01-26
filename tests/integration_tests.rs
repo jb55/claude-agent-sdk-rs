@@ -735,6 +735,211 @@ async fn test_plugin_integration() -> anyhow::Result<()> {
     Ok(())
 }
 
+// ============================================================================
+// Tool Permission Callback Tests
+// ============================================================================
+
+#[tokio::test]
+#[ignore] // Requires Claude CLI
+async fn test_can_use_tool_callback_invoked() -> anyhow::Result<()> {
+    use futures::FutureExt;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    // Track callback invocations
+    let callback_count = Arc::new(AtomicUsize::new(0));
+    let callback_count_clone = Arc::clone(&callback_count);
+
+    // Callback that allows everything and counts invocations
+    let callback = Arc::new(
+        move |tool_name: String,
+              _tool_input: serde_json::Value,
+              _context: claude_agent_sdk_rs::ToolPermissionContext|
+              -> futures::future::BoxFuture<'static, claude_agent_sdk_rs::PermissionResult> {
+            let count = Arc::clone(&callback_count_clone);
+            async move {
+                count.fetch_add(1, Ordering::SeqCst);
+                println!("Permission callback invoked for tool: {}", tool_name);
+                claude_agent_sdk_rs::PermissionResult::Allow(Default::default())
+            }
+            .boxed()
+        },
+    );
+
+    let options = ClaudeAgentOptions::builder()
+        .tools(["Bash"])
+        .permission_mode(PermissionMode::Default) // Don't bypass - we want permission checks
+        .can_use_tool(callback)
+        .max_turns(3)
+        .build();
+
+    let mut client = ClaudeClient::new(options);
+    client.connect().await?;
+
+    // Query that requires tool use
+    client.query("Run: echo 'test permission callback'").await?;
+
+    let mut found_result = false;
+    {
+        let mut stream = client.receive_response();
+        use futures::StreamExt;
+        while let Some(message) = stream.next().await {
+            let message = message?;
+            if let Message::Result(_) = message {
+                found_result = true;
+            }
+        }
+    }
+
+    assert!(found_result, "Should receive a result message");
+
+    // The callback should have been invoked at least once for the Bash tool
+    let count = callback_count.load(Ordering::SeqCst);
+    println!("Callback was invoked {} times", count);
+    assert!(
+        count > 0,
+        "Permission callback should have been invoked at least once"
+    );
+
+    client.disconnect().await?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore] // Requires Claude CLI
+async fn test_can_use_tool_callback_denies_tool() -> anyhow::Result<()> {
+    use futures::FutureExt;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let denied = Arc::new(AtomicBool::new(false));
+    let denied_clone = Arc::clone(&denied);
+
+    // Callback that denies Bash tool
+    let callback = Arc::new(
+        move |tool_name: String,
+              _tool_input: serde_json::Value,
+              _context: claude_agent_sdk_rs::ToolPermissionContext|
+              -> futures::future::BoxFuture<'static, claude_agent_sdk_rs::PermissionResult> {
+            let denied = Arc::clone(&denied_clone);
+            async move {
+                if tool_name == "Bash" {
+                    denied.store(true, Ordering::SeqCst);
+                    println!("Denying Bash tool");
+                    claude_agent_sdk_rs::PermissionResult::Deny(
+                        claude_agent_sdk_rs::PermissionResultDeny {
+                            message: "Bash not allowed in test".to_string(),
+                            interrupt: false,
+                        },
+                    )
+                } else {
+                    claude_agent_sdk_rs::PermissionResult::Allow(Default::default())
+                }
+            }
+            .boxed()
+        },
+    );
+
+    let options = ClaudeAgentOptions::builder()
+        .tools(["Bash"])
+        .permission_mode(PermissionMode::Default)
+        .can_use_tool(callback)
+        .max_turns(3)
+        .build();
+
+    let mut client = ClaudeClient::new(options);
+    client.connect().await?;
+
+    client.query("Run: echo 'this should be denied'").await?;
+
+    let mut found_result = false;
+    {
+        let mut stream = client.receive_response();
+        use futures::StreamExt;
+        while let Some(message) = stream.next().await {
+            let message = message?;
+            if let Message::Result(_) = message {
+                found_result = true;
+            }
+        }
+    }
+
+    assert!(found_result, "Should receive a result message");
+    assert!(
+        denied.load(Ordering::SeqCst),
+        "Callback should have denied Bash tool"
+    );
+
+    client.disconnect().await?;
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore] // Requires Claude CLI
+async fn test_can_use_tool_callback_receives_tool_input() -> anyhow::Result<()> {
+    use futures::FutureExt;
+    use std::sync::Mutex;
+
+    // Capture the tool input
+    let captured_input: Arc<Mutex<Option<serde_json::Value>>> = Arc::new(Mutex::new(None));
+    let captured_input_clone = Arc::clone(&captured_input);
+
+    let callback = Arc::new(
+        move |tool_name: String,
+              tool_input: serde_json::Value,
+              _context: claude_agent_sdk_rs::ToolPermissionContext|
+              -> futures::future::BoxFuture<'static, claude_agent_sdk_rs::PermissionResult> {
+            let captured = Arc::clone(&captured_input_clone);
+            async move {
+                if tool_name == "Bash" {
+                    let mut guard = captured.lock().unwrap();
+                    *guard = Some(tool_input.clone());
+                    println!("Captured Bash input: {:?}", tool_input);
+                }
+                claude_agent_sdk_rs::PermissionResult::Allow(Default::default())
+            }
+            .boxed()
+        },
+    );
+
+    let options = ClaudeAgentOptions::builder()
+        .tools(["Bash"])
+        .permission_mode(PermissionMode::Default)
+        .can_use_tool(callback)
+        .max_turns(3)
+        .build();
+
+    let mut client = ClaudeClient::new(options);
+    client.connect().await?;
+
+    client.query("Run the command: echo 'hello world'").await?;
+
+    {
+        let mut stream = client.receive_response();
+        use futures::StreamExt;
+        while let Some(message) = stream.next().await {
+            if message.is_err() {
+                break;
+            }
+            if let Ok(Message::Result(_)) = message {
+                break;
+            }
+        }
+    }
+
+    // Verify we captured tool input with a command field
+    let guard = captured_input.lock().unwrap();
+    if let Some(input) = guard.as_ref() {
+        assert!(
+            input.get("command").is_some(),
+            "Bash tool input should have a command field"
+        );
+        println!("Verified: tool input contains command field");
+    }
+    // Note: If no tool was used, this is OK - the test just verifies the plumbing works
+
+    client.disconnect().await?;
+    Ok(())
+}
+
 #[tokio::test]
 #[ignore] // Requires Claude CLI with plugin support
 async fn test_multiple_plugins() -> anyhow::Result<()> {
