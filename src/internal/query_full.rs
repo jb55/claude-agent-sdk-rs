@@ -12,6 +12,9 @@ use tokio::sync::oneshot;
 use crate::errors::{ClaudeError, Result};
 use crate::types::hooks::{HookCallback, HookContext, HookInput, HookMatcher};
 use crate::types::mcp::McpSdkServerConfig;
+use crate::types::permissions::{
+    CanUseToolCallback, PermissionResult, PermissionResultAllow, ToolPermissionContext,
+};
 
 use super::transport::Transport;
 
@@ -61,6 +64,8 @@ pub struct QueryFull {
     hook_callbacks: Arc<DashMap<String, HookCallback>>,
     /// SDK MCP servers - concurrent access via DashMap
     sdk_mcp_servers: Arc<DashMap<String, McpSdkServerConfig>>,
+    /// Tool permission callback
+    can_use_tool: Option<CanUseToolCallback>,
     next_callback_id: Arc<AtomicU64>,
     request_counter: Arc<AtomicU64>,
     /// Pending control request responses - concurrent access via DashMap
@@ -74,13 +79,17 @@ pub struct QueryFull {
 
 impl QueryFull {
     /// Create a new Query
-    pub fn new(transport: Box<dyn Transport>) -> Self {
+    pub fn new(
+        transport: Box<dyn Transport>,
+        can_use_tool: Option<CanUseToolCallback>,
+    ) -> Self {
         let (message_tx, message_rx) = flume::unbounded();
 
         Self {
             transport: Arc::from(transport),
             hook_callbacks: Arc::new(DashMap::new()),
             sdk_mcp_servers: Arc::new(DashMap::new()),
+            can_use_tool,
             next_callback_id: Arc::new(AtomicU64::new(0)),
             request_counter: Arc::new(AtomicU64::new(0)),
             pending_responses: Arc::new(DashMap::new()),
@@ -162,6 +171,7 @@ impl QueryFull {
         let transport_for_hooks = Arc::clone(&self.transport);
         let hook_callbacks = Arc::clone(&self.hook_callbacks);
         let sdk_mcp_servers = Arc::clone(&self.sdk_mcp_servers);
+        let can_use_tool = self.can_use_tool.clone();
         let pending_responses = Arc::clone(&self.pending_responses);
         let message_tx = self.message_tx.clone();
 
@@ -198,13 +208,14 @@ impl QueryFull {
                                 }
                             }
                             Some("control_request") => {
-                                // Handle incoming control request (e.g., hook callback, MCP message)
+                                // Handle incoming control request (e.g., hook callback, MCP message, tool permission)
                                 if let Ok(request) = serde_json::from_value::<IncomingControlRequest>(
                                     message.clone(),
                                 ) {
                                     let transport_clone = Arc::clone(&transport_for_hooks);
                                     let hook_callbacks_clone = Arc::clone(&hook_callbacks);
                                     let sdk_mcp_servers_clone = Arc::clone(&sdk_mcp_servers);
+                                    let can_use_tool_clone = can_use_tool.clone();
 
                                     tokio::spawn(async move {
                                         if let Err(e) = Self::handle_control_request(
@@ -212,6 +223,7 @@ impl QueryFull {
                                             transport_clone,
                                             hook_callbacks_clone,
                                             sdk_mcp_servers_clone,
+                                            can_use_tool_clone,
                                         )
                                         .await
                                         {
@@ -248,6 +260,7 @@ impl QueryFull {
         transport: Arc<dyn Transport>,
         hook_callbacks: Arc<DashMap<String, HookCallback>>,
         sdk_mcp_servers: Arc<DashMap<String, McpSdkServerConfig>>,
+        can_use_tool: Option<CanUseToolCallback>,
     ) -> Result<()> {
         let request_id = request.request_id;
         let request_data = request.request;
@@ -318,6 +331,55 @@ impl QueryFull {
                         .await?;
 
                 json!({"mcp_response": mcp_response})
+            }
+            "can_use_tool" => {
+                // Handle tool permission request (can_use_tool control protocol)
+                let tool_name = request_data
+                    .get("tool_name")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        ClaudeError::ControlProtocol("Missing tool_name".to_string())
+                    })?;
+
+                let tool_input = request_data.get("input").cloned().unwrap_or(json!({}));
+
+                let context = ToolPermissionContext {
+                    signal: None,
+                    suggestions: request_data
+                        .get("suggestions")
+                        .and_then(|v| serde_json::from_value(v.clone()).ok())
+                        .unwrap_or_default(),
+                };
+
+                if let Some(callback) = can_use_tool {
+                    let result =
+                        callback(tool_name.to_string(), tool_input.clone(), context).await;
+                    // Ensure updatedInput is always present for Allow responses
+                    // CLI requires this field to be a record, not undefined
+                    let result = match result {
+                        PermissionResult::Allow(mut allow) => {
+                            if allow.updated_input.is_none() {
+                                allow.updated_input = Some(tool_input);
+                            }
+                            PermissionResult::Allow(allow)
+                        }
+                        deny => deny,
+                    };
+                    serde_json::to_value(&result).map_err(|e| {
+                        ClaudeError::ControlProtocol(format!(
+                            "Failed to serialize permission result: {}",
+                            e
+                        ))
+                    })?
+                } else {
+                    // Default: allow if no callback configured
+                    // CLI requires updatedInput to be present
+                    serde_json::to_value(&PermissionResult::Allow(PermissionResultAllow {
+                        updated_input: Some(tool_input),
+                        ..Default::default()
+                    }))
+                    .unwrap()
+                }
             }
             _ => {
                 return Err(ClaudeError::ControlProtocol(format!(

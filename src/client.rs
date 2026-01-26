@@ -142,7 +142,10 @@ impl ClaudeClient {
         transport.connect().await?;
 
         // Create Query with hooks
-        let mut query = QueryFull::new(Box::new(transport));
+        let mut query = QueryFull::new(
+            Box::new(transport),
+            self.options.can_use_tool.clone(),
+        );
 
         // Extract SDK MCP servers from options
         let sdk_mcp_servers =

@@ -345,9 +345,15 @@ impl SubprocessTransport {
         }
 
         // Add permission prompt tool name
+        // Auto-set to "stdio" when can_use_tool is configured (required for control protocol)
         if let Some(ref tool_name) = self.options.permission_prompt_tool_name {
             args.push("--permission-prompt-tool".to_string());
             args.push(tool_name.clone());
+        } else if self.options.can_use_tool.is_some() {
+            // When can_use_tool callback is set, automatically use stdio for permission prompts
+            // This enables the control protocol to send can_use_tool requests
+            args.push("--permission-prompt-tool".to_string());
+            args.push("stdio".to_string());
         }
 
         // Add output format (structured outputs / JSON schema)
@@ -391,7 +397,8 @@ impl SubprocessTransport {
         }
 
         // Add include partial messages
-        if self.options.include_partial_messages {
+        // Auto-enable when can_use_tool is set (required for control protocol permission flow)
+        if self.options.include_partial_messages || self.options.can_use_tool.is_some() {
             args.push("--include-partial-messages".to_string());
         }
 
