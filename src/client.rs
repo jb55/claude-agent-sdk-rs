@@ -142,10 +142,7 @@ impl ClaudeClient {
         transport.connect().await?;
 
         // Create Query with hooks
-        let mut query = QueryFull::new(
-            Box::new(transport),
-            self.options.can_use_tool.clone(),
-        );
+        let mut query = QueryFull::new(Box::new(transport), self.options.can_use_tool.clone());
 
         // Extract SDK MCP servers from options
         let sdk_mcp_servers =
@@ -374,7 +371,7 @@ impl ClaudeClient {
     /// # }
     /// ```
     pub async fn query_with_content_and_session(
-        &mut self,
+        &self,
         content: impl Into<Vec<UserContentBlock>>,
         session_id: impl Into<String>,
     ) -> Result<()> {
