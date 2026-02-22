@@ -19,7 +19,7 @@ use crate::errors::{
 use crate::types::config::ClaudeAgentOptions;
 use crate::types::messages::UserContentBlock;
 use crate::version::{
-    ENTRYPOINT, MIN_CLI_VERSION, SDK_VERSION, SKIP_VERSION_CHECK_ENV, check_version,
+    ENTRYPOINT, MIN_CLI_VERSION, SDK_VERSION, SKIP_VERSION_CHECK_ENV, check_version, command,
 };
 
 use super::Transport;
@@ -120,7 +120,7 @@ impl SubprocessTransport {
     fn find_cli() -> Result<PathBuf> {
         // Strategy 1: Try executing 'claude' directly from PATH
         // This is the most reliable method as it respects the shell's PATH resolution
-        if let Ok(output) = std::process::Command::new("claude")
+        if let Ok(output) = command("claude")
             .arg("--version")
             .output()
             && output.status.success()
@@ -145,7 +145,7 @@ impl SubprocessTransport {
 
         // Strategy 3: Use 'where' command on Windows
         #[cfg(target_os = "windows")]
-        if let Ok(output) = std::process::Command::new("where").arg("claude").output() {
+        if let Ok(output) = command("where").arg("claude").output() {
             if output.status.success() {
                 let path_str = String::from_utf8_lossy(&output.stdout);
                 // 'where' returns all matches, take the first one
@@ -578,7 +578,7 @@ impl SubprocessTransport {
             return Ok(());
         }
 
-        let output = Command::new(&self.cli_path)
+        let output = Command::from(command(self.cli_path.to_str().unwrap_or("claude")))
             .arg("--version")
             .output()
             .await
@@ -643,7 +643,7 @@ impl Transport for SubprocessTransport {
         let env = self.build_env();
 
         // Build command
-        let mut cmd = Command::new(&self.cli_path);
+        let mut cmd = Command::from(command(self.cli_path.to_str().unwrap_or("claude")));
         cmd.args(&args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

@@ -27,7 +27,7 @@ static CLAUDE_CODE_VERSION: OnceLock<Option<String>> = OnceLock::new();
 pub fn get_claude_code_version() -> Option<&'static str> {
     CLAUDE_CODE_VERSION
         .get_or_init(|| {
-            std::process::Command::new("claude")
+            command("claude")
                 .arg("--version")
                 .output()
                 .ok()
@@ -52,6 +52,17 @@ pub const SKIP_VERSION_CHECK_ENV: &str = "CLAUDE_AGENT_SDK_SKIP_VERSION_CHECK";
 
 /// Entrypoint identifier for subprocess
 pub const ENTRYPOINT: &str = "sdk-rs";
+
+/// Create a [`std::process::Command`] that won't flash a console window on Windows.
+pub(crate) fn command(program: &str) -> std::process::Command {
+    let mut cmd = std::process::Command::new(program);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    cmd
+}
 
 /// Parse a semantic version string into (major, minor, patch)
 pub fn parse_version(version: &str) -> Option<(u32, u32, u32)> {
