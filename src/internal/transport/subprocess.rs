@@ -288,6 +288,7 @@ impl SubprocessTransport {
                 crate::types::config::PermissionMode::Default => "default",
                 crate::types::config::PermissionMode::AcceptEdits => "acceptEdits",
                 crate::types::config::PermissionMode::Plan => "plan",
+                crate::types::config::PermissionMode::Auto => "auto",
                 crate::types::config::PermissionMode::BypassPermissions => "bypassPermissions",
             };
             args.push("--permission-mode".to_string());

@@ -236,6 +236,10 @@ pub enum PermissionMode {
     /// Plan mode
     #[serde(rename = "plan")]
     Plan,
+    /// Automatic mode: auto-approve tool executions that pass Claude Code's
+    /// background safety classifier, still prompting for flagged/dangerous
+    /// operations. Serializes to `"auto"`.
+    Auto,
     /// Bypass all permissions
     BypassPermissions,
 }

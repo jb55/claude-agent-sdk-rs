@@ -401,8 +401,16 @@ fn test_permission_mode_serialization() {
         "\"acceptEdits\""
     );
     assert_eq!(
+        serde_json::to_string(&PermissionMode::Auto).unwrap(),
+        "\"auto\""
+    );
+    assert_eq!(
         serde_json::to_string(&PermissionMode::BypassPermissions).unwrap(),
         "\"bypassPermissions\""
+    );
+    assert_eq!(
+        serde_json::from_str::<PermissionMode>("\"auto\"").unwrap(),
+        PermissionMode::Auto
     );
 }
 
