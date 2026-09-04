@@ -45,9 +45,39 @@ pub enum Message {
     /// User message (rarely used in stream output)
     #[serde(rename = "user")]
     User(UserMessage),
+    /// Tool progress update (incremental progress from a long-running tool,
+    /// emitted before its final `tool_result` lands)
+    #[serde(rename = "tool_progress")]
+    ToolProgress(ToolProgressMessage),
     /// Control cancel request (ignore this - it's internal control protocol)
     #[serde(rename = "control_cancel_request")]
     ControlCancelRequest(serde_json::Value),
+}
+
+/// Tool progress update message
+///
+/// Emitted by the CLI to report incremental progress from a long-running tool
+/// (for example a subagent or a streaming `Bash` command) before its final
+/// `tool_result` arrives. The payload shape is not stable across CLI versions,
+/// so only the routing fields are typed and the remainder is captured verbatim
+/// in `extra`. Modeling it keeps the stream from failing to parse.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolProgressMessage {
+    /// Tool use ID this progress update corresponds to
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_use_id: Option<String>,
+    /// Parent tool use ID (set when the progress is from a nested/subagent tool)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_tool_use_id: Option<String>,
+    /// Session ID
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    /// Message UUID
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uuid: Option<String>,
+    /// Any additional progress payload fields (version-specific)
+    #[serde(flatten)]
+    pub extra: serde_json::Value,
 }
 
 /// User message
@@ -526,6 +556,32 @@ mod tests {
                 assert_eq!(system.tools.as_ref().unwrap().len(), 3);
             }
             _ => panic!("Expected System variant"),
+        }
+    }
+
+    #[test]
+    fn test_message_tool_progress_deserialization() {
+        let json_str = r#"{
+            "type": "tool_progress",
+            "tool_use_id": "toolu_abc",
+            "parent_tool_use_id": "toolu_parent",
+            "session_id": "test-session",
+            "uuid": "u-1",
+            "progress": {"phase": "running", "elapsed_ms": 1200}
+        }"#;
+
+        let msg: Message = serde_json::from_str(json_str).unwrap();
+        match msg {
+            Message::ToolProgress(progress) => {
+                assert_eq!(progress.tool_use_id, Some("toolu_abc".to_string()));
+                assert_eq!(
+                    progress.parent_tool_use_id,
+                    Some("toolu_parent".to_string())
+                );
+                // Unknown/version-specific fields land in `extra`.
+                assert_eq!(progress.extra["progress"]["phase"], "running");
+            }
+            _ => panic!("Expected ToolProgress variant"),
         }
     }
 
